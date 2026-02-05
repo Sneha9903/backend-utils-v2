@@ -2,10 +2,12 @@ import re
 from typing import Dict, List
 
 # --- PATTERNS ---
-URGENCY_PATTERNS = ["urgent", "immediately", "now", "today", "within 24 hours", "expire", "blocked", "verify", "kyc", "suspended", "action required", "deadline", "alert", "final notice"]
+# MOVED "blocked", "suspended" to THREAT list
+URGENCY_PATTERNS = ["urgent", "immediately", "now", "today", "within 24 hours", "expire", "verify", "kyc", "action required", "deadline", "alert", "final notice"]
 AUTHORITY_PATTERNS = ["police", "court", "rbi", "income tax", "official", "cbi", "officer", "bank manager", "cyber cell", "enforcement", "judge"]
 FINANCIAL_PATTERNS = ["pay", "upi", "amount", "transfer", "refund", "deposit", "fee", "bank", "account", "credit", "debit", "wallet", "pin", "details", "balance", "money", "cash", "loan"]
-THREAT_PATTERNS = ["jail", "arrest", "suspend", "disconnect", "illegal", "case file", "warrant", "legal action", "fir", "fine", "penalty", "block", "cut off", "detain", "prosecute"]
+# ADDED "blocked", "suspended" here
+THREAT_PATTERNS = ["jail", "arrest", "suspend", "suspended", "disconnect", "illegal", "case file", "warrant", "legal action", "fir", "fine", "penalty", "block", "blocked", "cut off", "detain", "prosecute"]
 LOTTERY_PATTERNS = ["lottery", "won", "prize", "congratulations", "claim", "winner", "lucky", "cash reward", "crore", "lakh", "jackpot"]
 IMPERSONATION_PATTERNS = ["mom", "dad", "son", "daughter", "accident", "hospital", "lost phone", "new number", "emergency", "help", "friend", "family"]
 JOB_PATTERNS = ["hiring", "part time", "part-time", "wfh", "work from home", "salary", "daily income", "earn", "telegram", "hr", "vacancy", "job offer"]
@@ -26,14 +28,12 @@ def _match_patterns(text: str, patterns: List[str]) -> List[str]:
     text = text.lower()
     found = []
     for p in patterns:
-        # FIX 1: Use Regex Word Boundaries (\b) so "now" doesn't match "know"
-        # This protects the "Dad" test case.
+        # Regex Word Boundaries (\b) to protect "Dad" (know vs now)
         if re.search(r'\b' + re.escape(p) + r'\b', text):
             found.append(p)
     return found
 
 def extract_intelligence_data(text: str) -> Dict:
-    """Extracts UPIs, Links, and Phones using Regex."""
     return {
         "upiIds": re.findall(REGEX_PATTERNS["upi"], text),
         "phoneNumbers": re.findall(REGEX_PATTERNS["phone"], text),
@@ -65,8 +65,10 @@ def detect_scam_signals(message: str) -> Dict:
     
     # Calculate Score
     score = 0
+    
+    # 1. High Severity Threats
     if authority: score += 30
-    if threat: score += 40
+    if threat: score += 40  # Now includes "blocked" -> +40 points
     if lottery: score += 50
     if sextortion: score += 50
     
@@ -86,32 +88,34 @@ def detect_scam_signals(message: str) -> Dict:
         if threat: score += 50
         elif urgency and financial: score += 10
     
-    # FIX 2: Tweak Impersonation Logic
-    # Dad + Money + Urgent = SCAM. 
-    # Dad + Money (without urgent) = SAFE.
     if impersonation:
-        if financial and urgency: score += 60 # Only if URGENT
-        elif "hospital" in text or "accident" in text: score += 60 # Or Emergency
-        else: score += 10 # Just chatting or safe money
+        if financial and urgency: score += 60 
+        elif "hospital" in text or "accident" in text: score += 60 
+        else: score += 10 
     
-    # FIX 3: Catch Leetspeak specifically
     if "p@y" in text or "m0ney" in text or "j0b" in text:
         score += 50
         found_signals.append("leetspeak_detected")
 
+    # 2. Generic Fallback
     if not (utility or job or investment or digital_arrest):
         if financial and urgency: score += 40
         elif financial: score += 20
         elif urgency: score += 10
 
+    # 3. NEW RULE: Data Heist Multiplier
+    # If we found a UPI or Phone AND there is Urgency/Threat -> It's definitely a scam
+    extracted_data = extract_intelligence_data(message)
+    has_risky_data = bool(extracted_data["upiIds"] or extracted_data["phoneNumbers"] or extracted_data["phishingLinks"])
+    
+    if has_risky_data and (urgency or threat):
+        score += 30  # Bonus points for "Pay to THIS number NOW"
+
     unique_keywords = list(set(found_signals))
     if len(unique_keywords) >= 3: score += 10
-
-    extracted_data = extract_intelligence_data(message)
 
     return {
         "confidence": min(score, 100),
         "suspicious_keywords": unique_keywords,
         "extracted_data": extracted_data 
     }
-
